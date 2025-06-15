@@ -3,7 +3,7 @@ set -e
 
 # 你所有脚本的文件名
 files=(
-    docker_gost_manager.sh
+    gost_docker_manager.sh
 )
 
 # 创建目标目录
@@ -19,4 +19,4 @@ done
 chmod +x docker_gost_manager/sh/*.sh
 
 # 运行主程序
-./docker_gost_manager/sh/docker_gost_manager.sh
+./docker_gost_manager/sh/gost_docker_manager.sh
