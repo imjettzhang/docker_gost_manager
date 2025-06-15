@@ -94,8 +94,9 @@ print_menu() {
  echo "3. 查看转发规则"
  echo "4. 删除转发规则" 
  echo "5. 重启 GOST 容器"
- echo "6. 卸载 GOST"
- echo "7. 退出"
+ echo "6. 实时查看日志"
+ echo "7. 卸载 GOST"
+ echo "8. 退出"
  echo "==========================================="
 }
 
@@ -424,7 +425,7 @@ check_and_install_jq() {
  return 0
 }
 
-# 列出当前所有转发规则
+# 列出当前所有转发规则并返回规则数组
 list_rules_for_deletion() {
  echo ">>> 当前转发规则列表："
  
@@ -433,7 +434,7 @@ list_rules_for_deletion() {
    return 1
  fi
  
- # 使用 jq 精确提取信息
+ # 使用 jq 精确提取信息，并将服务名存储到数组中
  local services=$(jq -r '.services[] | select(.name | test("service-(tcp|udp)-[0-9]+")) | "\(.name) -> \(.addr) (\(.handler.type)) -> \(.forwarder.nodes[0].addr)"' "$CONFIG_FILE" 2>/dev/null)
  
  if [ -z "$services" ]; then
@@ -441,12 +442,22 @@ list_rules_for_deletion() {
    return 1
  fi
  
+ # 清空全局数组
+ unset rule_services
+ declare -g -a rule_services
+ 
  local rule_count=0
- echo "$services" | while IFS= read -r line; do
+ while IFS= read -r line; do
    rule_count=$((rule_count + 1))
    echo "$rule_count. $line"
- done
+   
+   # 提取服务名并存储到数组
+   local service_name=$(echo "$line" | sed -E 's/^([^ ]+) -> .*/\1/')
+   rule_services[$rule_count]="$service_name"
+ done <<< "$services"
  
+ # 返回规则数量
+ echo "$rule_count" > /tmp/rule_count
  return 0
 }
 
@@ -464,19 +475,34 @@ delete_rule() {
    return 1
  fi
  
- echo ""
- read -p "输入要删除的监听端口: " port
+ # 获取规则数量
+ local rule_count=$(cat /tmp/rule_count 2>/dev/null || echo "0")
+ rm -f /tmp/rule_count
  
- if ! is_valid_port "$port"; then
-   log_error "无效的端口号！请输入 1-65535 之间的数字"
+ if [ "$rule_count" -eq 0 ]; then
+   log_error "没有可删除的规则"
    return 1
  fi
+ 
+ echo ""
+ while true; do
+   read -p "请输入要删除的规则编号 (1-$rule_count): " rule_number
+   
+   if [[ "$rule_number" =~ ^[0-9]+$ ]] && [ "$rule_number" -ge 1 ] && [ "$rule_number" -le "$rule_count" ]; then
+     break
+   else
+     log_error "无效的编号！请输入 1 到 $rule_count 之间的数字"
+   fi
+ done
 
- # 检查端口是否存在
- if ! grep -q "service-.*-$port" "$CONFIG_FILE"; then
-   log_error "端口 $port 的转发规则不存在！"
+ # 获取选中的服务名
+ local selected_service="${rule_services[$rule_number]}"
+ if [ -z "$selected_service" ]; then
+   log_error "无法获取选中的服务信息"
    return 1
  fi
+ 
+ echo ">>> 准备删除规则: $selected_service"
 
  # 备份配置文件
  cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
@@ -484,12 +510,25 @@ delete_rule() {
  # 使用 jq 精确删除规则
  log_success "使用 jq 工具删除规则..."
  
- # 删除所有匹配端口的服务（TCP 和 UDP）
- jq --arg port "$port" '.services |= map(select(.name | test("service-(tcp|udp)-" + $port + "$") | not))' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+ # 删除选中的服务
+ jq --arg service_name "$selected_service" '.services |= map(select(.name != $service_name))' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
  
  # 检查删除结果
- if ! grep -q "service-.*-$port" "$CONFIG_FILE"; then
-   log_success "成功删除端口 $port 的规则！"
+ if ! grep -q "\"name\":\"$selected_service\"" "$CONFIG_FILE"; then
+   log_success "成功删除规则: $selected_service"
+   
+   # 提取端口号用于防火墙规则删除
+   local port=$(echo "$selected_service" | sed -E 's/.*service-(tcp|udp)-([0-9]+)/\2/')
+   local protocol=$(echo "$selected_service" | sed -E 's/.*service-(tcp|udp)-([0-9]+)/\1/')
+   
+   # 检查是否还有相同端口的其他协议规则
+   if ! grep -q "service-.*-$port" "$CONFIG_FILE"; then
+     # 如果没有其他规则使用该端口，删除防火墙规则
+     delete_firewall_rule "$port" "both"
+   else
+     # 如果还有其他协议的规则，只删除对应协议的防火墙规则
+     delete_firewall_rule "$port" "$protocol"
+   fi
  else
    log_error "删除失败，恢复备份文件..."
    # 恢复备份文件
@@ -497,9 +536,6 @@ delete_rule() {
    cp "$latest_backup" "$CONFIG_FILE"
    return 1
  fi
-
- # 删除防火墙规则
- delete_firewall_rule "$port" "both"
 
  # 重启 GOST 容器以使配置生效
  echo ">>> 重启 GOST 容器..."
@@ -509,10 +545,18 @@ delete_rule() {
  # 验证删除结果
  if docker ps | grep -q $CONTAINER_NAME; then
    log_success "GOST 容器重启成功！"
-   if ! netstat -tunlp | grep -q ":$port.*gost"; then
-     log_success "端口 $port 已停止监听，删除成功！"
+   if [ "$protocol" = "tcp" ]; then
+     if ! netstat -tunlp | grep -q ":$port.*gost.*tcp"; then
+       log_success "TCP 端口 $port 已停止监听，删除成功！"
+     else
+       log_warning "TCP 端口 $port 仍在监听，请检查配置"
+     fi
    else
-     log_warning "端口 $port 仍在监听，请检查配置"
+     if ! netstat -tunlp | grep -q ":$port.*gost.*udp"; then
+       log_success "UDP 端口 $port 已停止监听，删除成功！"
+     else
+       log_warning "UDP 端口 $port 仍在监听，请检查配置"
+     fi
    fi
  else
    log_error "GOST 容器启动失败，请检查配置："
@@ -531,6 +575,19 @@ restart_container() {
    log_error "GOST 容器启动失败，请检查配置："
    docker logs --tail 10 $CONTAINER_NAME
  fi
+}
+
+view_container_logs() {
+ echo ">>> 实时查看 GOST 容器日志 (按 Ctrl+C 退出)"
+ 
+ # 检查容器是否存在
+ if ! docker ps -a | grep -q $CONTAINER_NAME; then
+   log_error "GOST 容器不存在！请先安装 GOST"
+   return 1
+ fi
+ 
+ # 直接进入实时日志模式
+ docker logs --tail 20 -f $CONTAINER_NAME
 }
 
 uninstall_gost() {
@@ -554,8 +611,9 @@ while true; do
    3) view_rules ;;
    4) delete_rule ;;
    5) restart_container ;;
-   6) uninstall_gost ;;
-   7)
+   6) view_container_logs ;;
+   7) uninstall_gost ;;
+   8)
      echo "退出脚本！"
      exit 0
      ;;
