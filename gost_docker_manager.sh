@@ -388,9 +388,6 @@ view_rules() {
  if ! list_rules_for_deletion; then
    return 1
  fi
- 
- echo -e "\n>>> 当前端口监听状态："
- netstat -tunlp | grep gost || echo "未检测到 GOST 监听的端口"
 }
 
 # 检查和安装 jq 工具
