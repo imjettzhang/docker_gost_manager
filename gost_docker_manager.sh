@@ -178,22 +178,6 @@ install_docker_and_gost() {
  # 检查是否已存在 GOST 容器
  if docker ps -a | grep -q $CONTAINER_NAME; then
    log_warning "检测到已存在的 GOST 容器！"
-   echo ">>> 当前容器状态："
-   docker ps -a | grep $CONTAINER_NAME
-   
-   if [ -f "$CONFIG_FILE" ]; then
-     echo -e "\n>>> 当前转发规则："
-     if check_and_install_jq; then
-       jq '.' "$CONFIG_FILE"
-     else
-       cat "$CONFIG_FILE"
-     fi
-   fi
-   
-   echo -e "\n警告：重新安装将会："
-   echo "1. 停止并删除现有容器"
-   echo "2. 清空所有转发规则"
-   echo "3. 重置配置文件"
    
    while true; do
      read -p "是否确认覆盖安装？这将清空所有转发规则 (y/n): " confirm
@@ -400,40 +384,13 @@ create_rule() {
 }
 
 view_rules() {
- echo ">>> 当前转发规则："
- if [ -f "$CONFIG_FILE" ]; then
-   
-   # 检查并安装 jq
-   if ! check_and_install_jq; then
-     log_warning "无法安装 jq 工具，仅显示原始文件内容"
-     cat "$CONFIG_FILE"
-   else
-     echo "=== 格式化规则显示 ==="
-     local rule_count=0
-     
-     # 提取并显示每个服务的详细信息
-     jq -r '.services[] | select(.name | test("service-(tcp|udp)-[0-9]+")) | "\(.name)|\(.handler.type)|\(.addr)|\(.forwarder.nodes[0].addr)"' "$CONFIG_FILE" 2>/dev/null | while IFS='|' read -r name protocol addr target; do
-       rule_count=$((rule_count + 1))
-       local port=$(echo "$name" | sed -E 's/.*service-(tcp|udp)-([0-9]+)/\2/')
-       
-       echo "规则 $rule_count:"
-       echo "  服务名: $name"
-       echo "  协议: $protocol"
-       echo "  本地端口: $port"
-       echo "  监听地址: $addr"
-       echo "  目标地址: $target"
-       echo ""
-     done
-     
-     echo -e "\n=== 原始配置文件 ==="
-     jq '.' "$CONFIG_FILE"
-   fi
-   
-   echo -e "\n>>> 当前端口监听状态："
-   netstat -tunlp | grep gost || echo "未检测到 GOST 监听的端口"
- else
-   log_warning "配置文件不存在"
+ # 直接使用简洁的列表格式显示规则
+ if ! list_rules_for_deletion; then
+   return 1
  fi
+ 
+ echo -e "\n>>> 当前端口监听状态："
+ netstat -tunlp | grep gost || echo "未检测到 GOST 监听的端口"
 }
 
 # 检查和安装 jq 工具
