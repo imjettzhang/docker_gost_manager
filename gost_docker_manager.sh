@@ -3,6 +3,7 @@
 DOCKER_IMAGE="gogost/gost:latest"
 CONFIG_DIR="/root/gost"
 CONTAINER_NAME="gost-manager"
+CONFIG_FILE="$CONFIG_DIR/gost.json"
 
 # 日志函数
 log_success() {
@@ -78,46 +79,66 @@ print_menu() {
 add_firewall_rule() {
  local port=$1
  local protocol=$2
- if [[ $protocol == "tcp" || $protocol == "both" ]]; then
-   if ! iptables -C INPUT -p tcp --dport $port -j ACCEPT &>/dev/null; then
-     iptables -A INPUT -p tcp --dport $port -j ACCEPT
-     log_success "防火墙规则已添加：允许 TCP 端口 $port"
+ 
+ # 检查是否安装了 ufw
+ if command -v ufw &>/dev/null; then
+   # 检查 ufw 是否处于活动状态
+   if ufw status | grep -q "Status: active"; then
+     if [[ $protocol == "tcp" || $protocol == "both" ]]; then
+       if ! ufw status | grep -q "$port/tcp"; then
+         ufw allow $port/tcp &>/dev/null
+         log_success "UFW 防火墙规则已添加：允许 TCP 端口 $port"
+       else
+         log_warning "TCP 端口 $port 已在 UFW 中开放，无需重复添加"
+       fi
+     fi
+     if [[ $protocol == "udp" || $protocol == "both" ]]; then
+       if ! ufw status | grep -q "$port/udp"; then
+         ufw allow $port/udp &>/dev/null
+         log_success "UFW 防火墙规则已添加：允许 UDP 端口 $port"
+       else
+         log_warning "UDP 端口 $port 已在 UFW 中开放，无需重复添加"
+       fi
+     fi
    else
-     log_warning "TCP 端口 $port 已开放，无需重复添加"
+     log_warning "检测到 UFW 但未启用，跳过防火墙配置"
    fi
+ else
+   log_warning "未检测到 UFW 防火墙，跳过防火墙配置（假设默认放行）"
  fi
- if [[ $protocol == "udp" || $protocol == "both" ]]; then
-   if ! iptables -C INPUT -p udp --dport $port -j ACCEPT &>/dev/null; then
-     iptables -A INPUT -p udp --dport $port -j ACCEPT
-     log_success "防火墙规则已添加：允许 UDP 端口 $port"
-   else
-     log_warning "UDP 端口 $port 已开放，无需重复添加"
-   fi
- fi
- iptables-save > /etc/iptables/rules.v4
 }
 
 # 删除防火墙规则
 delete_firewall_rule() {
  local port=$1
  local protocol=$2
- if [[ $protocol == "tcp" || $protocol == "both" ]]; then
-   if iptables -C INPUT -p tcp --dport $port -j ACCEPT &>/dev/null; then
-     iptables -D INPUT -p tcp --dport $port -j ACCEPT
-     log_success "防火墙规则已删除：阻止 TCP 端口 $port"
+ 
+ # 检查是否安装了 ufw
+ if command -v ufw &>/dev/null; then
+   # 检查 ufw 是否处于活动状态
+   if ufw status | grep -q "Status: active"; then
+     if [[ $protocol == "tcp" || $protocol == "both" ]]; then
+       if ufw status | grep -q "$port/tcp"; then
+         ufw delete allow $port/tcp &>/dev/null
+         log_success "UFW 防火墙规则已删除：移除 TCP 端口 $port"
+       else
+         log_warning "TCP 端口 $port 未在 UFW 中开放，无需删除"
+       fi
+     fi
+     if [[ $protocol == "udp" || $protocol == "both" ]]; then
+       if ufw status | grep -q "$port/udp"; then
+         ufw delete allow $port/udp &>/dev/null
+         log_success "UFW 防火墙规则已删除：移除 UDP 端口 $port"
+       else
+         log_warning "UDP 端口 $port 未在 UFW 中开放，无需删除"
+       fi
+     fi
    else
-     log_warning "TCP 端口 $port 未开放，无需删除"
+     log_warning "检测到 UFW 但未启用，跳过防火墙配置"
    fi
+ else
+   log_warning "未检测到 UFW 防火墙，跳过防火墙配置"
  fi
- if [[ $protocol == "udp" || $protocol == "both" ]]; then
-   if iptables -C INPUT -p udp --dport $port -j ACCEPT &>/dev/null; then
-     iptables -D INPUT -p udp --dport $port -j ACCEPT
-     log_success "防火墙规则已删除：阻止 UDP 端口 $port"
-   else
-     log_warning "UDP 端口 $port 未开放，无需删除"
-   fi
- fi
- iptables-save > /etc/iptables/rules.v4
 }
 
 install_docker_and_gost() {
@@ -136,9 +157,13 @@ install_docker_and_gost() {
    echo ">>> 当前容器状态："
    docker ps -a | grep $CONTAINER_NAME
    
-   if [ -f "$CONFIG_DIR/gost.yml" ]; then
+   if [ -f "$CONFIG_FILE" ]; then
      echo -e "\n>>> 当前转发规则："
-     cat $CONFIG_DIR/gost.yml
+     if check_and_install_jq; then
+       jq '.' "$CONFIG_FILE"
+     else
+       cat "$CONFIG_FILE"
+     fi
    fi
    
    echo -e "\n警告：重新安装将会："
@@ -170,8 +195,10 @@ install_docker_and_gost() {
  mkdir -p $CONFIG_DIR
  
  # 创建空配置文件
- cat > $CONFIG_DIR/gost.yml << 'EOF'
-services:
+ cat > $CONFIG_FILE << 'EOF'
+{
+  "services": []
+}
 EOF
 
  # 拉取并运行 GOST 容器
@@ -183,7 +210,7 @@ EOF
    --name $CONTAINER_NAME \
    --restart always \
    --network host \
-   -v $CONFIG_DIR/gost.yml:/etc/gost/gost.yml \
+   -v $CONFIG_FILE:/etc/gost/gost.json \
    $DOCKER_IMAGE
 
  if docker ps | grep -q $CONTAINER_NAME; then
@@ -196,6 +223,12 @@ EOF
 
 create_rule() {
  echo ">>> 添加转发规则"
+ 
+ # 检查并安装 jq
+ if ! check_and_install_jq; then
+   log_error "无法安装 jq 工具，操作中止"
+   return 1
+ fi
  
  # 验证本地端口
  while true; do
@@ -234,73 +267,68 @@ create_rule() {
  read -p "请输入 (1/2/3): " protocol_choice
 
  # 备份现有配置
- cp $CONFIG_DIR/gost.yml $CONFIG_DIR/gost.yml.bak
+ cp $CONFIG_FILE $CONFIG_FILE.bak
+
+ # 添加新规则到 JSON 配置
+ add_service_to_json() {
+   local service_name=$1
+   local protocol=$2
+   local has_metadata=$3
+   
+   # 使用 jq 添加服务到配置文件
+   if [ "$has_metadata" = "true" ]; then
+     # UDP 服务，包含 metadata
+     jq --arg name "$service_name" \
+        --arg addr ":$listen_port" \
+        --arg type "$protocol" \
+        --arg target "$target_addr:$target_port" \
+        '.services += [{
+          "name": $name,
+          "addr": $addr,
+          "handler": {"type": $type},
+          "listener": {"type": $type},
+          "metadata": {
+            "keepAlive": true,
+            "ttl": "5s",
+            "readBufferSize": 4096
+          },
+          "forwarder": {
+            "nodes": [{"name": "target-0", "addr": $target}]
+          }
+        }]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+   else
+     # TCP 服务，不包含 metadata
+     jq --arg name "$service_name" \
+        --arg addr ":$listen_port" \
+        --arg type "$protocol" \
+        --arg target "$target_addr:$target_port" \
+        '.services += [{
+          "name": $name,
+          "addr": $addr,
+          "handler": {"type": $type},
+          "listener": {"type": $type},
+          "forwarder": {
+            "nodes": [{"name": "target-0", "addr": $target}]
+          }
+        }]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+   fi
+ }
 
  case $protocol_choice in
    1) 
      # TCP 转发配置
-     cat >> $CONFIG_DIR/gost.yml << EOF
- - name: service-tcp-$listen_port
-   addr: :$listen_port
-   handler:
-     type: tcp
-   listener:
-     type: tcp
-   forwarder:
-     nodes:
-       - name: target-0
-         addr: $target_addr:$target_port
-EOF
+     add_service_to_json "service-tcp-$listen_port" "tcp" "false"
      add_firewall_rule "$listen_port" "tcp"
      ;;
    2)
      # UDP 转发配置
-     cat >> $CONFIG_DIR/gost.yml << EOF
- - name: service-udp-$listen_port
-   addr: :$listen_port
-   handler:
-     type: udp
-   listener:
-     type: udp
-   metadata:
-     keepAlive: true
-     ttl: 5s
-     readBufferSize: 4096
-   forwarder:
-     nodes:
-       - name: target-0
-         addr: $target_addr:$target_port
-EOF
+     add_service_to_json "service-udp-$listen_port" "udp" "true"
      add_firewall_rule "$listen_port" "udp"
      ;;
    3)
      # TCP + UDP 转发配置
-     cat >> $CONFIG_DIR/gost.yml << EOF
- - name: service-tcp-$listen_port
-   addr: :$listen_port
-   handler:
-     type: tcp
-   listener:
-     type: tcp
-   forwarder:
-     nodes:
-       - name: target-0
-         addr: $target_addr:$target_port
- - name: service-udp-$listen_port
-   addr: :$listen_port
-   handler:
-     type: udp
-   listener:
-     type: udp
-   metadata:
-     keepAlive: true
-     ttl: 5s
-     readBufferSize: 4096
-   forwarder:
-     nodes:
-       - name: target-0
-         addr: $target_addr:$target_port
-EOF
+     add_service_to_json "service-tcp-$listen_port" "tcp" "false"
+     add_service_to_json "service-udp-$listen_port" "udp" "true"
      add_firewall_rule "$listen_port" "both"
      ;;
    *)
@@ -332,8 +360,34 @@ EOF
 
 view_rules() {
  echo ">>> 当前转发规则："
- if [ -f "$CONFIG_DIR/gost.yml" ]; then
-   cat $CONFIG_DIR/gost.yml
+ if [ -f "$CONFIG_FILE" ]; then
+   
+   # 检查并安装 jq
+   if ! check_and_install_jq; then
+     log_warning "无法安装 jq 工具，仅显示原始文件内容"
+     cat "$CONFIG_FILE"
+   else
+     echo "=== 格式化规则显示 ==="
+     local rule_count=0
+     
+     # 提取并显示每个服务的详细信息
+     jq -r '.services[] | select(.name | test("service-(tcp|udp)-[0-9]+")) | "\(.name)|\(.handler.type)|\(.addr)|\(.forwarder.nodes[0].addr)"' "$CONFIG_FILE" 2>/dev/null | while IFS='|' read -r name protocol addr target; do
+       rule_count=$((rule_count + 1))
+       local port=$(echo "$name" | sed -E 's/.*service-(tcp|udp)-([0-9]+)/\2/')
+       
+       echo "规则 $rule_count:"
+       echo "  服务名: $name"
+       echo "  协议: $protocol"
+       echo "  本地端口: $port"
+       echo "  监听地址: $addr"
+       echo "  目标地址: $target"
+       echo ""
+     done
+     
+     echo -e "\n=== 原始配置文件 ==="
+     jq '.' "$CONFIG_FILE"
+   fi
+   
    echo -e "\n>>> 当前端口监听状态："
    netstat -tunlp | grep gost || echo "未检测到 GOST 监听的端口"
  else
@@ -341,8 +395,81 @@ view_rules() {
  fi
 }
 
+# 检查和安装 jq 工具
+check_and_install_jq() {
+ if ! command -v jq &>/dev/null; then
+   log_warning "jq 工具未安装，正在尝试安装..."
+   
+   # 尝试使用包管理器安装
+   if command -v apt-get &>/dev/null; then
+     apt-get update && apt-get install -y jq
+   elif command -v yum &>/dev/null; then
+     yum install -y jq
+   elif command -v dnf &>/dev/null; then
+     dnf install -y jq
+   else
+     # 手动下载安装
+     local jq_url="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64"
+     if curl -L "$jq_url" -o /tmp/jq && chmod +x /tmp/jq; then
+       mv /tmp/jq /usr/local/bin/jq
+       log_success "jq 工具安装成功"
+     else
+       log_error "jq 工具安装失败，无法继续操作"
+       return 1
+     fi
+   fi
+   
+   if command -v jq &>/dev/null; then
+     log_success "jq 工具安装成功"
+   else
+     log_error "jq 工具安装失败，无法继续操作"
+     return 1
+   fi
+ fi
+ return 0
+}
+
+# 列出当前所有转发规则
+list_rules_for_deletion() {
+ echo ">>> 当前转发规则列表："
+ 
+ if ! [ -f "$CONFIG_FILE" ]; then
+   log_warning "配置文件不存在"
+   return 1
+ fi
+ 
+ # 使用 jq 精确提取信息
+ local services=$(jq -r '.services[] | select(.name | test("service-(tcp|udp)-[0-9]+")) | "\(.name) -> \(.addr) (\(.handler.type)) -> \(.forwarder.nodes[0].addr)"' "$CONFIG_FILE" 2>/dev/null)
+ 
+ if [ -z "$services" ]; then
+   log_warning "未找到任何转发规则"
+   return 1
+ fi
+ 
+ local rule_count=0
+ echo "$services" | while IFS= read -r line; do
+   rule_count=$((rule_count + 1))
+   echo "$rule_count. $line"
+ done
+ 
+ return 0
+}
+
 delete_rule() {
  echo ">>> 删除转发规则"
+ 
+ # 检查并安装 jq
+ if ! check_and_install_jq; then
+   log_error "无法安装 jq 工具，操作中止"
+   return 1
+ fi
+ 
+ # 显示当前规则
+ if ! list_rules_for_deletion; then
+   return 1
+ fi
+ 
+ echo ""
  read -p "输入要删除的监听端口: " port
  
  if ! is_valid_port "$port"; then
@@ -350,52 +477,51 @@ delete_rule() {
    return 1
  fi
 
- # 创建临时文件
- tmp_file=$(mktemp)
- 
- # 写入 services: 行（只写入一次）
- echo "services:" > "$tmp_file"
+ # 检查端口是否存在
+ if ! grep -q "service-.*-$port" "$CONFIG_FILE"; then
+   log_error "端口 $port 的转发规则不存在！"
+   return 1
+ fi
 
- # 用于判断是否在要删除的服务块中
- skip_block=false
- 
- # 逐行处理配置文件，跳过第一行的 services:
- tail -n +2 "$CONFIG_DIR/gost.yml" | while IFS= read -r line; do
-   # 检查新的服务块开始
-   if [[ $line =~ ^[[:space:]]-[[:space:]]name:[[:space:]]service-(tcp|udp)-([0-9]+)$ ]]; then
-     service_port="${BASH_REMATCH[2]}"
-     # 精确匹配端口号
-     if [ "$service_port" = "$port" ]; then
-       skip_block=true
-     else
-       skip_block=false
-       echo "$line" >> "$tmp_file"
-     fi
-   elif [[ $line =~ ^[[:space:]]-[[:space:]]name: ]]; then
-     # 新的非端口相关服务块开始
-     skip_block=false
-     echo "$line" >> "$tmp_file"
-   elif [ "$skip_block" = "false" ]; then
-     # 如果不在要删除的块中，就写入行
-     echo "$line" >> "$tmp_file"
-   fi
- done
+ # 备份配置文件
+ cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
 
- # 更新配置文件
- mv "$tmp_file" "$CONFIG_DIR/gost.yml"
+ # 使用 jq 精确删除规则
+ log_success "使用 jq 工具删除规则..."
+ 
+ # 删除所有匹配端口的服务（TCP 和 UDP）
+ jq --arg port "$port" '.services |= map(select(.name | test("service-(tcp|udp)-" + $port + "$") | not))' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+ 
+ # 检查删除结果
+ if ! grep -q "service-.*-$port" "$CONFIG_FILE"; then
+   log_success "成功删除端口 $port 的规则！"
+ else
+   log_error "删除失败，恢复备份文件..."
+   # 恢复备份文件
+   latest_backup=$(ls -t "$CONFIG_FILE.bak."* | head -1)
+   cp "$latest_backup" "$CONFIG_FILE"
+   return 1
+ fi
 
  # 删除防火墙规则
  delete_firewall_rule "$port" "both"
 
  # 重启 GOST 容器以使配置生效
+ echo ">>> 重启 GOST 容器..."
  docker restart $CONTAINER_NAME
  sleep 2
 
- # 检查是否成功删除
- if grep -q "service.*(tcp|udp)-$port[[:space:]]*$" "$CONFIG_DIR/gost.yml"; then
-   log_error "删除失败！端口 $port 的规则仍存在于配置文件中"
+ # 验证删除结果
+ if docker ps | grep -q $CONTAINER_NAME; then
+   log_success "GOST 容器重启成功！"
+   if ! netstat -tunlp | grep -q ":$port.*gost"; then
+     log_success "端口 $port 已停止监听，删除成功！"
+   else
+     log_warning "端口 $port 仍在监听，请检查配置"
+   fi
  else
-   log_success "端口 $port 的规则已成功删除！"
+   log_error "GOST 容器启动失败，请检查配置："
+   docker logs --tail 10 $CONTAINER_NAME
  fi
 }
 
