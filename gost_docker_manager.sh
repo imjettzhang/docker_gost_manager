@@ -89,7 +89,7 @@ format_target_address() {
 
 print_menu() {
  echo "========= Docker GOST 转发管理脚本 ========="
- echo "1. 安装 Docker 和构建 GOST 镜像"
+ echo "1. 安装 Docker GOST"
  echo "2. 创建转发规则"
  echo "3. 查看转发规则"
  echo "4. 删除转发规则" 
