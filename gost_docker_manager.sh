@@ -39,8 +39,18 @@ is_valid_ipv4() {
 # 检查IPv6地址是否合法
 is_valid_ipv6() {
  local ip=$1
- # 简单的IPv6格式检查
- [[ $ip =~ ^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$ ]]
+ # 更精确的IPv6格式检查，支持各种IPv6格式
+ # 完整格式: 2404:c140:1f00:1e::10a0
+ # 压缩格式: ::1, ::ffff:192.168.1.1
+ # 混合格式等
+ if [[ $ip =~ ^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$ ]] || \
+    [[ $ip =~ ^::([0-9a-fA-F]{0,4}:){0,6}[0-9a-fA-F]{0,4}$ ]] || \
+    [[ $ip =~ ^([0-9a-fA-F]{0,4}:){1,6}:([0-9a-fA-F]{0,4}:){0,5}[0-9a-fA-F]{0,4}$ ]] || \
+    [[ $ip =~ ^([0-9a-fA-F]{0,4}:){1,7}:$ ]] || \
+    [[ $ip == "::" ]]; then
+   return 0
+ fi
+ return 1
 }
 
 # 检查域名是否合法
@@ -60,6 +70,20 @@ validate_target_address() {
    return 0
  else
    return 1
+ fi
+}
+
+# 格式化目标地址（IPv6 自动加方括号）
+format_target_address() {
+ local addr=$1
+ local port=$2
+ 
+ if is_valid_ipv6 "$addr"; then
+   # IPv6 地址需要用方括号包围
+   echo "[$addr]:$port"
+ else
+   # IPv4 地址或域名直接使用
+   echo "$addr:$port"
  fi
 }
 
@@ -260,6 +284,17 @@ create_rule() {
    fi
  done
 
+ # 显示格式化后的目标地址确认
+ local formatted_target=$(format_target_address "$target_addr" "$target_port")
+ echo ""
+ echo ">>> 转发配置确认："
+ echo "本地端口: $listen_port"
+ echo "目标地址: $formatted_target"
+ if is_valid_ipv6 "$target_addr"; then
+   log_success "检测到 IPv6 地址，已自动添加方括号格式"
+ fi
+ echo ""
+
  echo "请选择协议："
  echo "1: TCP"
  echo "2: UDP"
@@ -275,13 +310,16 @@ create_rule() {
    local protocol=$2
    local has_metadata=$3
    
+   # 格式化目标地址（IPv6 自动加方括号）
+   local formatted_target=$(format_target_address "$target_addr" "$target_port")
+   
    # 使用 jq 添加服务到配置文件
    if [ "$has_metadata" = "true" ]; then
      # UDP 服务，包含 metadata
      jq --arg name "$service_name" \
         --arg addr ":$listen_port" \
         --arg type "$protocol" \
-        --arg target "$target_addr:$target_port" \
+        --arg target "$formatted_target" \
         '.services += [{
           "name": $name,
           "addr": $addr,
@@ -301,7 +339,7 @@ create_rule() {
      jq --arg name "$service_name" \
         --arg addr ":$listen_port" \
         --arg type "$protocol" \
-        --arg target "$target_addr:$target_port" \
+        --arg target "$formatted_target" \
         '.services += [{
           "name": $name,
           "addr": $addr,
@@ -347,10 +385,13 @@ create_rule() {
    3) proto="TCP + UDP" ;;
  esac
  
+ # 重新获取格式化的目标地址用于显示
+ local display_target=$(format_target_address "$target_addr" "$target_port")
+ 
  if netstat -tunlp | grep -q ":$listen_port.*gost"; then
    log_success "转发规则已添加并生效！"
    echo ">>> 转发详情:"
-   echo "本地端口: $listen_port -> 目标: $target_addr:$target_port"
+   echo "本地端口: $listen_port -> 目标: $display_target"
    echo "协议: $proto"
  else
    log_warning "转发规则已添加，但端口未正常监听，请检查日志："
