@@ -21,9 +21,7 @@
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/imjettzhang/docker_gost_manager/main/quickstart.sh)
 ```
-```bash
-bash <(curl -fsSL https://kkgithub.com/imjettzhang/docker_gost_manager/main/quickstart.sh)
-```
+
 
 ## 系统要求
 

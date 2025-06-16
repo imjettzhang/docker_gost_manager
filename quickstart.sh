@@ -12,7 +12,7 @@ mkdir -p docker_gost_manager/sh
 # 下载所有脚本
 for file in "${files[@]}"; do
     # echo "正在下载 $file ..."
-    curl -fsSL -o "docker_gost_manager/sh/$file" "https://kkgithub.com/imjettzhang/docker_gost_manager/main/$file"
+    curl -fsSL -o "docker_gost_manager/sh/$file" "https://raw.githubusercontent.com/imjettzhang/docker_gost_manager/main/$file"
 done
 
 # 给所有脚本加执行权限
