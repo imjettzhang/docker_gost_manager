@@ -166,14 +166,112 @@ delete_firewall_rule() {
  fi
 }
 
+# 检测是否为中国大陆网络环境
+is_china_mainland() {
+ # 通过多种方式检测中国大陆网络环境
+ local china_indicators=0
+ 
+ # 检测时区
+ if [ "$(date +%Z)" = "CST" ] || [ "$(timedatectl show --property=Timezone --value 2>/dev/null)" = "Asia/Shanghai" ]; then
+   ((china_indicators++))
+ fi
+ 
+ # 检测系统语言
+ if [[ "$LANG" =~ zh_CN ]] || [[ "$LC_ALL" =~ zh_CN ]]; then
+   ((china_indicators++))
+ fi
+ 
+ # 检测网络连接性（测试访问百度）
+ if curl -s --connect-timeout 3 --max-time 5 "https://www.baidu.com" >/dev/null 2>&1; then
+   ((china_indicators++))
+ fi
+ 
+ # 如果有2个或以上指标符合，认为是中国大陆环境
+ [ $china_indicators -ge 2 ]
+}
+
 install_docker_and_gost() {
+ echo ">>> 检测网络环境..."
+ local use_china_mirror=false
+ 
+ if is_china_mainland; then
+   log_success "检测到中国大陆网络环境，将使用国内镜像源加速"
+   use_china_mirror=true
+ else
+   log_success "检测到海外网络环境，使用官方源"
+ fi
+ 
  echo ">>> 安装 Docker..."
  if ! command -v docker &>/dev/null; then
-   curl -fsSL https://get.docker.com | bash
+       if [ "$use_china_mirror" = true ]; then
+      # 中国大陆使用阿里云镜像安装 Docker
+      log_success "使用阿里云镜像安装 Docker..."
+      
+      # 检测操作系统类型
+      if [ -f /etc/debian_version ]; then
+        # Debian/Ubuntu 系列
+        local distro="ubuntu"
+        if grep -q "Debian" /etc/os-release; then
+          distro="debian"
+        fi
+        
+        curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/$distro/gpg | apt-key add -
+        add-apt-repository "deb [arch=amd64] https://mirrors.aliyun.com/docker-ce/linux/$distro $(lsb_release -cs) stable"
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io
+      elif [ -f /etc/redhat-release ]; then
+        # CentOS/RHEL 系列
+        log_success "检测到 CentOS/RHEL 系统..."
+        yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+        yum install -y docker-ce docker-ce-cli containerd.io
+      else
+        # 其他系统降级使用官方安装脚本
+        log_warning "未识别的操作系统，使用官方安装脚本..."
+        curl -fsSL https://get.docker.com | bash
+      fi
+   else
+     # 海外使用官方安装脚本
+     curl -fsSL https://get.docker.com | bash
+   fi
+   
    systemctl start docker
    systemctl enable docker
+   
+   # 中国大陆配置 Docker 镜像加速
+   if [ "$use_china_mirror" = true ]; then
+     log_success "配置 Docker 镜像加速..."
+     mkdir -p /etc/docker
+     cat > /etc/docker/daemon.json << 'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.1panel.live/",
+    "https://docker.m.daocloud.io"
+  ]
+}
+EOF
+     systemctl restart docker
+     log_success "Docker 镜像加速配置完成"
+   fi
  else
    log_success "Docker 已安装"
+   
+   # 如果是中国大陆环境且未配置镜像加速，提示配置
+   if [ "$use_china_mirror" = true ] && [ ! -f /etc/docker/daemon.json ]; then
+     echo ">>> 检测到未配置 Docker 镜像加速，正在配置..."
+     mkdir -p /etc/docker
+     cat > /etc/docker/daemon.json << 'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.1panel.live/",
+    "https://docker.m.daocloud.io"
+  ]
+}
+EOF
+     systemctl restart docker
+     log_success "Docker 镜像加速配置完成"
+   fi
  fi
 
  # 检查是否已存在 GOST 容器

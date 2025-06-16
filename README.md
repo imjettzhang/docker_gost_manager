@@ -12,6 +12,7 @@
 - 📝 **实时日志**: 提供容器日志实时查看功能
 - 🔄 **容器管理**: 支持重启和卸载操作
 - 🔒 **地址验证**: 智能验证 IPv4、IPv6 和域名格式
+- 🇨🇳 **中国大陆优化**: 自动检测网络环境，使用国内镜像源加速
 
 ## 快速开始
 
@@ -23,7 +24,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/imjettzhang/docker_gost_mana
 
 ## 系统要求
 
-- **操作系统**: Linux (Ubuntu, Debian 等)
+- **操作系统**: Linux (Ubuntu, Debian, CentOS, RHEL 等)
 - **权限**: 需要 root 权限或 sudo 访问
 - **网络**: 需要访问 GitHub 和 Docker Hub
 - **依赖**: curl, docker
