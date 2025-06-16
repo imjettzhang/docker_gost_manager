@@ -203,34 +203,35 @@ install_docker_and_gost() {
  
  echo ">>> 安装 Docker..."
  if ! command -v docker &>/dev/null; then
-       if [ "$use_china_mirror" = true ]; then
-      # 中国大陆使用阿里云镜像安装 Docker
-      log_success "使用阿里云镜像安装 Docker..."
-      
-      # 检测操作系统类型
-      if [ -f /etc/debian_version ]; then
-        # Debian/Ubuntu 系列
-        local distro="ubuntu"
-        if grep -q "Debian" /etc/os-release; then
-          distro="debian"
-        fi
-        
-        curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/$distro/gpg | apt-key add -
-        add-apt-repository "deb [arch=amd64] https://mirrors.aliyun.com/docker-ce/linux/$distro $(lsb_release -cs) stable"
-        apt-get update
-        apt-get install -y docker-ce docker-ce-cli containerd.io
-      elif [ -f /etc/redhat-release ]; then
-        # CentOS/RHEL 系列
-        log_success "检测到 CentOS/RHEL 系统..."
-        yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
-        yum install -y docker-ce docker-ce-cli containerd.io
-      else
-        # 其他系统降级使用官方安装脚本
-        log_warning "未识别的操作系统，使用官方安装脚本..."
-        curl -fsSL https://get.docker.com | bash
-      fi
+   if [ "$use_china_mirror" = true ]; then
+     # 中国大陆使用阿里云镜像安装 Docker
+     log_success "使用阿里云镜像安装 Docker..."
+     
+     # 检测操作系统类型
+     if [ -f /etc/debian_version ]; then
+       # Debian/Ubuntu 系列
+       local distro="ubuntu"
+       if grep -q "Debian" /etc/os-release; then
+         distro="debian"
+       fi
+       
+       curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/$distro/gpg | apt-key add -
+       add-apt-repository "deb [arch=amd64] https://mirrors.aliyun.com/docker-ce/linux/$distro $(lsb_release -cs) stable"
+       apt-get update
+       apt-get install -y docker-ce docker-ce-cli containerd.io
+     elif [ -f /etc/redhat-release ]; then
+       # CentOS/RHEL 系列
+       log_success "检测到 CentOS/RHEL 系统..."
+       yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+       yum install -y docker-ce docker-ce-cli containerd.io
+     else
+       # 其他系统降级使用官方安装脚本
+       log_warning "未识别的操作系统，使用官方安装脚本..."
+       curl -fsSL https://get.docker.com | bash
+     fi
    else
      # 海外使用官方安装脚本
+     log_success "海外节点使用官方安装脚本..."
      curl -fsSL https://get.docker.com | bash
    fi
    
