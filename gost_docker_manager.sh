@@ -168,26 +168,39 @@ delete_firewall_rule() {
 
 # 检测是否为中国大陆网络环境
 is_china_mainland() {
- # 通过多种方式检测中国大陆网络环境
- local china_indicators=0
+ # 通过 CloudFlare 的 trace 接口检测地理位置
+ local location=""
  
- # 检测时区
- if [ "$(date +%Z)" = "CST" ] || [ "$(timedatectl show --property=Timezone --value 2>/dev/null)" = "Asia/Shanghai" ]; then
-   ((china_indicators++))
+ # 使用 curl 获取 CloudFlare trace 信息
+ local trace_info=$(curl -s --connect-timeout 5 --max-time 10 "https://chat.openai.com/cdn-cgi/trace" 2>/dev/null)
+ 
+ if [ $? -eq 0 ] && [ -n "$trace_info" ]; then
+   # 提取 loc 字段的值
+   location=$(echo "$trace_info" | grep "^loc=" | cut -d'=' -f2)
+   
+   # 如果 loc 字段为 CN，则为中国大陆环境
+   if [ "$location" = "CN" ]; then
+     return 0  # 中国大陆
+   else
+     return 1  # 非中国大陆
+   fi
+ else
+   # 如果网络请求失败，使用备用检测方法
+   local china_indicators=0
+   
+   # 检测时区
+   if [ "$(date +%Z)" = "CST" ] || [ "$(timedatectl show --property=Timezone --value 2>/dev/null)" = "Asia/Shanghai" ]; then
+     ((china_indicators++))
+   fi
+   
+   # 检测系统语言
+   if [[ "$LANG" =~ zh_CN ]] || [[ "$LC_ALL" =~ zh_CN ]]; then
+     ((china_indicators++))
+   fi
+   
+   # 如果有2个或以上指标符合，认为是中国大陆环境
+   [ $china_indicators -ge 2 ]
  fi
- 
- # 检测系统语言
- if [[ "$LANG" =~ zh_CN ]] || [[ "$LC_ALL" =~ zh_CN ]]; then
-   ((china_indicators++))
- fi
- 
- # 检测网络连接性（测试访问百度）
- if curl -s --connect-timeout 3 --max-time 5 "https://www.baidu.com" >/dev/null 2>&1; then
-   ((china_indicators++))
- fi
- 
- # 如果有2个或以上指标符合，认为是中国大陆环境
- [ $china_indicators -ge 2 ]
 }
 
 install_docker_and_gost() {
